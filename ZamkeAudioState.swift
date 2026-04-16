@@ -26,22 +26,12 @@ enum ZamkePhase: Int, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .infiltration: return "추적 중"
-        case .presence:     return "접근 중"
-        case .cognition:    return "보고 있다"
-        case .pressure:     return "뒤에 있다"
-        case .domination:   return "도망쳐라"
+        case .infiltration: return "침투"
+        case .presence:     return "존재"
+        case .cognition:    return "인지"
+        case .pressure:     return "압박"
+        case .domination:   return "장악"
         }
-    }
-
-    /// 위험 등급 (0.0~1.0)
-    var threatLevel: Double {
-        Double(rawValue) / 4.0
-    }
-
-    /// 위험 색상 — 낮으면 흰색, 높으면 붉은색
-    var isDanger: Bool {
-        rawValue >= 3
     }
 }
 

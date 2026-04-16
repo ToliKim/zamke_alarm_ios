@@ -21,17 +21,31 @@ struct HwadeuljjakView: View {
     @State private var flashRed = false
     @State private var pulseScale: CGFloat = 1.0
     @State private var eyeOpacity: Double = 0.3
-    @State private var phaseText: String = "침투"
-    @State private var intensityPercent: Int = 0
+    @State private var threatText: String = "추적 중"
+    @State private var threatDanger: Bool = false    // true = 붉은색
+    @State private var threatBlink: Bool = false     // 위기 시 점멸
+    @State private var elapsedSeconds: Int = 0       // 경과 시간
     @State private var statusTimer: Timer?
+    @State private var threatSnapID: UUID = UUID()   // 텍스트 전환 시 snap
     @State private var dismissed = false
+    @State private var systemStartTime = Date()
+
+    // 축하 화면 애니메이션
+    @State private var celebImgScale: CGFloat = 0.3   // 작게 시작
+    @State private var celebImgOpacity: Double = 0     // 투명에서 시작
+    @State private var celebImgBlur: CGFloat = 12      // 블러에서 시작
+    @State private var celebTextOpacity: Double = 0
+    @State private var celebSubTextOpacity: Double = 0
+    @State private var celebMessageOpacity: Double = 0
+    @State private var celebButtonOpacity: Double = 0
+    @State private var celebGlow: Double = 0
 
     // 배경 flicker
     @State private var flicker: Double = 0.0
 
-    // intensity 기반 배경 반응 (0.0~1.0)
+    // intensity 기반 배경 반응 (0.0~1.0) — audioEngine에서 직접
     private var intensity: Double {
-        Double(intensityPercent) / 100.0
+        audioEngine.overallIntensity
     }
 
     var body: some View {
@@ -82,12 +96,6 @@ struct HwadeuljjakView: View {
             startFlicker()
         }
         .onDisappear { stopSystem() }
-        .onChange(of: missionManager.transitioning) { _, isTransitioning in
-            if !isTransitioning && showMission {
-                // 전환 끝 → 새 미션 시작 → z 사운드 정지
-                audioEngine.stopZamke()
-            }
-        }
     }
 
     // MARK: - Background (변형된 Image 02)
@@ -172,44 +180,50 @@ struct HwadeuljjakView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Header (위협 인지 UI)
 
     private var headerView: some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .bottom) {
-                // 단계명 — 얇고 넓은 간격
-                Text("「  \(phaseText)  」")
-                    .font(.system(size: 14, weight: .thin, design: .serif))
-                    .tracking(8)
-                    .foregroundColor(.white.opacity(0.45))
+        VStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                // ── 왼쪽: 위협 상태 텍스트 ──
+                Text(threatText)
+                    .id(threatSnapID)
+                    .font(Font.system(size: 22, weight: .black).width(.condensed))
+                    .tracking(1)
+                    .foregroundColor(threatDanger
+                        ? Color(red: 1.0, green: 0.23, blue: 0.23)
+                        : Color(red: 0.96, green: 0.96, blue: 0.96))
+                    .opacity(threatBlink ? 0.3 : 1.0)
+                    .shadow(color: threatDanger
+                        ? Color.red.opacity(0.4) : .clear,
+                        radius: threatDanger ? 8 : 0)
+                    .transition(.identity)  // 즉각 전환, 부드러운 전환 없음
 
                 Spacer()
 
-                // 퍼센트 — 극도로 가는 대형 숫자
-                Text("\(intensityPercent)%")
-                    .font(.system(size: 16, weight: .ultraLight, design: .monospaced))
-                    .foregroundColor(.red.opacity(0.4 + Double(intensityPercent) / 150.0))
+                // ── 오른쪽: 경과 시간 ──
+                Text("\(elapsedSeconds)초")
+                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                    .foregroundColor(elapsedSeconds > 30
+                        ? Color(red: 1.0, green: 0.23, blue: 0.23)
+                        : Color.white.opacity(0.6))
             }
             .padding(.horizontal, 24)
 
-            // 강도 바 — 미세한 선
+            // 위협 바 — intensity 기반
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Rectangle()
-                        .fill(Color.white.opacity(0.03))
-                        .frame(height: 1)
+                        .fill(Color.white.opacity(0.04))
+                        .frame(height: 3)
                     Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.red.opacity(0.8), Color.red.opacity(0.3)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: geo.size.width * CGFloat(intensityPercent) / 100.0, height: 1)
+                        .fill(intensity > 0.6
+                            ? Color(red: 1.0, green: 0.23, blue: 0.23)
+                            : Color.white.opacity(0.3))
+                        .frame(width: geo.size.width * intensity, height: 3)
                 }
             }
-            .frame(height: 1)
+            .frame(height: 3)
             .padding(.horizontal, 24)
         }
     }
@@ -259,49 +273,202 @@ struct HwadeuljjakView: View {
 
     // MARK: - Cleared View
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MARK: - 축하 화면 (03 이미지 + 줌인아웃 + 문구)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    private let celebMessages = [
+        "오늘도 좋은 하루 되세요",
+        "당신은 이미 충분합니다",
+        "오늘 하루도 빛날 거예요",
+        "새로운 하루가 당신을 기다립니다",
+        "할 수 있다는 걸 증명했습니다",
+        "당신의 하루가 눈부시길",
+        "오늘도 멋진 하루 시작하세요",
+        "세상이 당신을 응원합니다",
+    ]
+
     private var clearedView: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        GeometryReader { geo in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            // 탈출 성공 — 대형 serif + 넓은 tracking
-            Text("탈 출  성 공")
-                .font(.system(size: 30, weight: .thin, design: .serif))
-                .tracking(12)
-                .foregroundColor(.green.opacity(0.7))
-                .shadow(color: .green.opacity(0.2), radius: 15)
+                // ── 03 이미지 (작게→크게 생동감 등장 → 브리딩) ──
+                Image("03")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .scaleEffect(celebImgScale)
+                    .opacity(celebImgOpacity)
+                    .blur(radius: celebImgBlur)
+                    .clipped()
+                    .ignoresSafeArea()
 
-            Text("— 모든 미션을 완료했습니다 —")
-                .font(.system(size: 11, weight: .light, design: .serif))
-                .tracking(4)
-                .foregroundColor(.white.opacity(0.35))
+                // ── 부드러운 비네트 ──
+                RadialGradient(
+                    colors: [
+                        Color.clear,
+                        Color.black.opacity(0.25),
+                        Color.black.opacity(0.65)
+                    ],
+                    center: .center,
+                    startRadius: geo.size.width * 0.22,
+                    endRadius: geo.size.width * 0.75
+                )
+                .ignoresSafeArea()
 
-            if missionManager.failCount > 0 {
-                Text("실패  \(missionManager.failCount)")
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
-                    .tracking(3)
-                    .foregroundColor(.white.opacity(0.2))
-            }
+                // ── 골든 글로우 ──
+                RadialGradient(
+                    colors: [
+                        Color(red: 1.0, green: 0.85, blue: 0.4).opacity(celebGlow * 0.18),
+                        Color(red: 1.0, green: 0.75, blue: 0.3).opacity(celebGlow * 0.06),
+                        Color.clear
+                    ],
+                    center: UnitPoint(x: 0.5, y: 0.42),
+                    startRadius: 10,
+                    endRadius: geo.size.width * 0.55
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
-            Spacer()
+                // ── 콘텐츠 ──
+                VStack(spacing: 0) {
+                    Spacer()
 
-            Button(action: {
-                stopSystem()
-                if let onBack = onBack {
-                    onBack()
+                    // 축하 메인 텍스트 — 크고 밝게
+                    Text("축 하 합 니 다")
+                        .font(.system(size: 32, weight: .medium, design: .serif))
+                        .tracking(16)
+                        .foregroundColor(.white)
+                        .shadow(color: Color(red: 1.0, green: 0.85, blue: 0.4).opacity(0.7), radius: 30)
+                        .shadow(color: Color(red: 1.0, green: 0.85, blue: 0.4).opacity(0.4), radius: 60)
+                        .shadow(color: .black.opacity(0.8), radius: 4, x: 0, y: 2)
+                        .opacity(celebTextOpacity)
+
+                    Spacer().frame(height: 20)
+
+                    // 구분선 — 더 밝게
+                    Rectangle()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.clear,
+                                    Color(red: 1.0, green: 0.85, blue: 0.5).opacity(0.5),
+                                    Color(red: 1.0, green: 0.85, blue: 0.5).opacity(0.6),
+                                    Color(red: 1.0, green: 0.85, blue: 0.5).opacity(0.5),
+                                    Color.clear
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: 220, height: 1)
+                        .opacity(celebTextOpacity)
+
+                    Spacer().frame(height: 24)
+
+                    // 서브 텍스트 — 밝기 향상
+                    Text("— 모든 미션을 완료했습니다 —")
+                        .font(.system(size: 14, weight: .regular, design: .serif))
+                        .tracking(5)
+                        .foregroundColor(.white.opacity(0.7))
+                        .shadow(color: .black.opacity(0.6), radius: 3, x: 0, y: 1)
+                        .opacity(celebSubTextOpacity)
+
+                    Spacer().frame(height: 40)
+
+                    // 랜덤 응원 메시지 — 크고 밝게
+                    Text(celebMessages.randomElement() ?? "오늘도 좋은 하루 되세요")
+                        .font(.system(size: 20, weight: .medium, design: .serif))
+                        .tracking(4)
+                        .foregroundColor(Color(red: 1.0, green: 0.95, blue: 0.82))
+                        .shadow(color: Color(red: 1.0, green: 0.85, blue: 0.4).opacity(0.5), radius: 20)
+                        .shadow(color: .black.opacity(0.7), radius: 3, x: 0, y: 2)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 30)
+                        .opacity(celebMessageOpacity)
+
+                    if missionManager.failCount > 0 {
+                        Spacer().frame(height: 20)
+                        Text("실패  \(missionManager.failCount)")
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .tracking(3)
+                            .foregroundColor(.white.opacity(0.35))
+                            .shadow(color: .black.opacity(0.5), radius: 2)
+                            .opacity(celebSubTextOpacity)
+                    }
+
+                    Spacer()
+
+                    // 확인 버튼 — 더 선명하게
+                    Button(action: {
+                        stopSystem()
+                        if let onBack = onBack {
+                            onBack()
+                        }
+                    }) {
+                        Text("확  인")
+                            .font(.system(size: 22, weight: .semibold, design: .serif))
+                            .tracking(10)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 20)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(red: 1.0, green: 0.85, blue: 0.4).opacity(0.15))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(red: 1.0, green: 0.85, blue: 0.4).opacity(0.4), lineWidth: 1.5)
+                            )
+                            .shadow(color: Color(red: 1.0, green: 0.85, blue: 0.4).opacity(0.2), radius: 15)
+                    }
+                    .padding(.horizontal, 40)
+                    .padding(.bottom, 60)
+                    .opacity(celebButtonOpacity)
                 }
-            }) {
-                Text("확  인")
-                    .font(.system(size: 15, weight: .light, design: .serif))
-                    .tracking(8)
-                    .foregroundColor(.white.opacity(0.5))
-                    .padding(.horizontal, 44)
-                    .padding(.vertical, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
-                    )
             }
-            .padding(.bottom, 50)
+        }
+        .ignoresSafeArea()
+        .onAppear { startCelebration() }
+    }
+
+    private func startCelebration() {
+        // ━━ 1단계: 03 이미지 작게→크게 드라마틱 등장 (0→2초) ━━
+        // 초기값: scale=0.3, opacity=0, blur=12
+        withAnimation(.spring(response: 1.8, dampingFraction: 0.7, blendDuration: 0.5)) {
+            celebImgScale = 1.05
+            celebImgOpacity = 0.7
+            celebImgBlur = 1.5
+        }
+
+        // ━━ 2단계: 등장 완료 후 브리딩 시작 (2초 후) ━━
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [self] in
+            withAnimation(.easeInOut(duration: 5.0).repeatForever(autoreverses: true)) {
+                celebImgScale = 1.15
+            }
+            withAnimation(.easeInOut(duration: 5.0).repeatForever(autoreverses: true)) {
+                celebImgBlur = 0.5
+            }
+        }
+
+        // 골든 글로우 맥동
+        withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true).delay(0.5)) {
+            celebGlow = 1.0
+        }
+
+        // 순차적 텍스트 등장 (이미지 등장 후에 나타남)
+        withAnimation(.easeOut(duration: 1.2).delay(1.2)) {
+            celebTextOpacity = 1.0
+        }
+        withAnimation(.easeOut(duration: 1.0).delay(2.0)) {
+            celebSubTextOpacity = 1.0
+        }
+        withAnimation(.easeOut(duration: 1.2).delay(2.8)) {
+            celebMessageOpacity = 1.0
+        }
+        withAnimation(.easeOut(duration: 0.8).delay(3.5)) {
+            celebButtonOpacity = 1.0
         }
     }
 
@@ -309,64 +476,41 @@ struct HwadeuljjakView: View {
 
     private var missionContainerView: some View {
         Group {
-            if missionManager.transitioning {
-                // 미션 전환 중 2초 대기 화면
-                VStack(spacing: 16) {
-                    Text("다 음  미 션  준 비")
-                        .font(.system(size: 15, weight: .thin, design: .serif))
-                        .tracking(6)
-                        .foregroundColor(.white.opacity(0.4))
-
-                    // 맥동하는 점
-                    HStack(spacing: 8) {
-                        ForEach(0..<3, id: \.self) { i in
-                            Circle()
-                                .fill(Color.red.opacity(0.5))
-                                .frame(width: 6, height: 6)
-                                .opacity(transitionDotOpacity(index: i))
-                        }
-                    }
-                }
-            } else {
-                switch missionManager.currentMission {
-                case .tracking:
-                    TrackingMissionView(
-                        difficulty: missionManager.difficulty,
-                        onResult: handleMissionResult
-                    )
-                case .memory:
-                    MemoryMissionView(
-                        difficulty: missionManager.difficulty,
-                        onResult: handleMissionResult
-                    )
-                case .rhythm:
-                    RhythmMissionView(
-                        difficulty: missionManager.difficulty,
-                        onResult: handleMissionResult,
-                        audioEngine: audioEngine
-                    )
-                case .reaction:
-                    ReactionMissionView(
-                        difficulty: missionManager.difficulty,
-                        onResult: handleMissionResult
-                    )
-                case .finalQuiz:
-                    FinalQuizMissionView(
-                        difficulty: missionManager.difficulty,
-                        onResult: handleMissionResult
-                    )
-                }
+            switch missionManager.currentMission {
+            case .reaperGaze:
+                ReaperGazeMissionView(
+                    difficulty: missionManager.difficulty,
+                    onResult: handleMissionResult,
+                    audioEngine: audioEngine
+                )
+            case .redLight:
+                RedLightMissionView(
+                    difficulty: missionManager.difficulty,
+                    onResult: handleMissionResult,
+                    audioEngine: audioEngine
+                )
+            case .sentence:
+                SentenceMissionView(
+                    difficulty: missionManager.difficulty,
+                    onResult: handleMissionResult,
+                    audioEngine: audioEngine
+                )
+            case .breath:
+                BreathMissionView(
+                    difficulty: missionManager.difficulty,
+                    onResult: handleMissionResult,
+                    audioEngine: audioEngine
+                )
+            case .wisp:
+                WispMissionView(
+                    difficulty: missionManager.difficulty,
+                    onResult: handleMissionResult,
+                    audioEngine: audioEngine
+                )
             }
         }
         .id(missionManager.missionAttemptID)
         .transition(.opacity)
-    }
-
-    @State private var transitionDotPhase: Double = 0
-
-    private func transitionDotOpacity(index: Int) -> Double {
-        let phase = (Date.timeIntervalSinceReferenceDate * 2.0 + Double(index) * 0.5)
-        return 0.3 + 0.7 * abs(sin(phase))
     }
 
     // MARK: - Footer
@@ -374,17 +518,15 @@ struct HwadeuljjakView: View {
     private var footerView: some View {
         VStack(spacing: 8) {
             if showMission {
-                // 미션 지시 — serif italic 느낌 (thin + 넓은 tracking)
+                // 미션 지시
                 Text(missionManager.currentMission.instruction)
-                    .font(.system(size: 13, weight: .light, design: .serif))
-                    .tracking(3)
-                    .foregroundColor(.white.opacity(0.35))
+                    .font(Font.system(size: 20, weight: .heavy).width(.condensed))
+                    .tracking(1.5)
+                    .foregroundColor(Color(red: 0.96, green: 0.96, blue: 0.96))
 
-                // 단계 — 극도로 얇은 monospaced
-                Text("단계  \(missionManager.currentMission.rawValue + 1) / 5")
-                    .font(.system(size: 10, weight: .ultraLight, design: .monospaced))
-                    .tracking(5)
-                    .foregroundColor(.white.opacity(0.18))
+                Text("단계  \(missionManager.currentMission.rawValue + 1) / \(MissionType.totalCount)")
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color(red: 1.0, green: 0.23, blue: 0.23))
             } else {
                 Text("대  기")
                     .font(.system(size: 11, weight: .thin, design: .serif))
@@ -404,6 +546,7 @@ struct HwadeuljjakView: View {
     // MARK: - System Start/Stop
 
     private func startSystem() {
+        systemStartTime = Date()
         audioEngine.start()
         startStatusUpdater()
         startPulse()
@@ -416,7 +559,7 @@ struct HwadeuljjakView: View {
             audioEngine.startZamkeFailLoop()
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 8...15)) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 8...15)) { [self] in
             beginMissionCountdown()
         }
     }
@@ -427,11 +570,35 @@ struct HwadeuljjakView: View {
     }
 
     private func startStatusUpdater() {
-        statusTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-            phaseText = audioEngine.currentPhase.displayName
-            intensityPercent = Int(audioEngine.overallIntensity * 100)
+        let st = Timer(timeInterval: 0.5, repeats: true) { [self] _ in
+            let phase = audioEngine.currentPhase
+            let newText = phase.displayName
+            let newDanger = phase.isDanger
+
+            // 텍스트 변경 시 즉각 snap (부드러운 전환 없음)
+            if newText != threatText {
+                threatText = newText
+                threatSnapID = UUID()  // 뷰 재생성 → 즉각 전환
+                // 위험 단계 변경 시 햅틱
+                if newDanger {
+                    let gen = UIImpactFeedbackGenerator(style: .heavy)
+                    gen.impactOccurred()
+                }
+            }
+
+            threatDanger = newDanger
             eyeOpacity = 0.2 + audioEngine.overallIntensity * 0.6
+            elapsedSeconds = Int(Date().timeIntervalSince(systemStartTime))
+
+            // 위기 시 점멸 (pressure, domination)
+            if phase.isDanger {
+                threatBlink.toggle()
+            } else {
+                threatBlink = false
+            }
         }
+        RunLoop.main.add(st, forMode: .common)
+        statusTimer = st
     }
 
     private func startPulse() {
@@ -447,7 +614,7 @@ struct HwadeuljjakView: View {
         missionCountdown = 3
         audioEngine.escalate()
 
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { t in
+        let ct = Timer(timeInterval: 1, repeats: true) { [self] t in
             missionCountdown -= 1
             if missionCountdown <= 0 {
                 t.invalidate()
@@ -458,6 +625,7 @@ struct HwadeuljjakView: View {
                 missionManager.startMission()
             }
         }
+        RunLoop.main.add(ct, forMode: .common)
     }
 
     private func handleMissionResult(_ result: MissionResult) {
@@ -468,21 +636,21 @@ struct HwadeuljjakView: View {
                 audioEngine.stopZamke()
                 dismissAlarm()
             } else {
-                // 미션 전환 대기 중 → z 사운드 드문드문 재생
+                // 전환 대기 중 잠깐 z 사운드 → 1초 후 새 미션 시작 시 정지
                 audioEngine.startZamkeFailLoop()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.05) { [self] in
+                    audioEngine.stopZamke()
+                }
             }
 
         case .failure:
             missionManager.reportResult(.failure)
 
             flashRed = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { flashRed = false }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in flashRed = false }
 
-            audioEngine.fireAjaeng()
-            audioEngine.escalate()
-
-            // 미션 실패 → z 사운드 한 번 재생 (미션 즉시 재시작이므로 루프 아닌 단발)
             audioEngine.playZamkeOnce()
+            audioEngine.escalate()
 
             let gen = UIImpactFeedbackGenerator(style: .heavy)
             gen.impactOccurred()
@@ -492,6 +660,14 @@ struct HwadeuljjakView: View {
     private func dismissAlarm() {
         showMission = false
         audioEngine.stop()
+
+        // ── 기록 저장 ──
+        let duration = Date().timeIntervalSince(systemStartTime)
+        HwadeuljjakRecordStore.shared.add(
+            duration: duration,
+            success: true,
+            failCount: missionManager.failCount
+        )
 
         let gen = UINotificationFeedbackGenerator()
         gen.notificationOccurred(.success)
